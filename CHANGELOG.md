@@ -2,7 +2,7 @@
 
 Crab MCP follows [semantic versioning](https://semver.org). Before 1.0, a minor version may break what an application writes; the entry says what to change.
 
-## Unreleased
+## 0.1.2 — 2026-11-26
 
 - The endpoint's route says what it is in its doc comment, for whatever describes an application's routes, such as an API document.
 
