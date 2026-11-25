@@ -180,4 +180,17 @@ final class DiscoveryTest extends McpTestCase
 
         self::assertSame(200, $response->getStatusCode());
     }
+
+    public function testAmongNamesHoldingEveryWordTheTightestComesFirst(): void
+    {
+        $app = self::app(static function (): void {
+            Route::get('/keys', [\Crab\Mcp\Tests\Fixtures\OrderKeys::class, 'index']);
+            Route::get('/projects/{id:\d+}/orders', [Orders::class, 'index']);
+            Mcp::server('/mcp')->fromRoutes()->discovery();
+        });
+
+        $found = self::call($app, 'tools_search', ['query' => 'orders list'])['structuredContent']['tools'];
+
+        self::assertSame(['orders_list', 'orders_keys_list'], array_column($found, 'name'));
+    }
 }

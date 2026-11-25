@@ -164,9 +164,17 @@ final readonly class Discovery
                 $scored[] = [$score, $tool];
             }
         }
+        // The best score first; between equals, the name with the fewest words besides those asked for,
+        // so "errors list" finds errors_list before errors_keys_list.
         usort(
             $scored,
-            static fn(array $a, array $b): int => $b[0] <=> $a[0] ?: strcmp($a[1]->info()->name, $b[1]->info()->name),
+            static fn(array $a, array $b): int => (
+                [$b[0], substr_count($a[1]->info()->name, '_'), $a[1]->info()->name] <=> [
+                    $a[0],
+                    substr_count($b[1]->info()->name, '_'),
+                    $b[1]->info()->name,
+                ]
+            ),
         );
         // Loose matches far below the best one are noise.
         $best = $scored[0][0] ?? 0;
