@@ -2,6 +2,10 @@
 
 Crab MCP follows [semantic versioning](https://semver.org). Before 1.0, a minor version may break what an application writes; the entry says what to change.
 
+## Unreleased
+
+- The endpoint's route says what it is in its doc comment, for whatever describes an application's routes, such as an API document.
+
 ## 0.1.1 — 2026-11-26
 
 - A tool's `arguments`, and a request's `params`, written as a JSON list are refused even when empty (`[]`), which PHP's decoding alone would take for `{}`.

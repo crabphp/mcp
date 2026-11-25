@@ -223,7 +223,15 @@ final class McpDefinition implements Definition
             );
             $this->filters[$path] = $declaration->filter;
             $endpoint = new Endpoint($server, $factory, $own, $origins);
-            $route = $router->post($path, $endpoint->handle(...));
+            $route = $router->post(
+                $path,
+                /**
+                 * The MCP endpoint (Streamable HTTP): one JSON-RPC message to a request, answered with JSON or with server-sent events.
+                 *
+                 * @return ResponseInterface|\Generator<int, string>
+                 */
+                static fn(Request $request): ResponseInterface|\Generator => $endpoint->handle($request),
+            );
             if ($declaration->middleware !== []) {
                 $route->middleware(...$declaration->middleware);
             }

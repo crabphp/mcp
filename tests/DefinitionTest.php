@@ -167,4 +167,16 @@ final class DefinitionTest extends McpTestCase
         self::assertSame('Shows one product by its id.', $tools['show_product']->description);
         self::assertTrue($tools['show_product']->readOnly);
     }
+
+    public function testTheEndpointSaysWhatItIsToWhateverDescribesRoutes(): void
+    {
+        $app = self::app();
+        $app->define();
+        $route = $app->router->match('POST', '/mcp');
+        self::assertNotNull($route);
+
+        $comment = (string) $app->router->signature($route)?->getDocComment();
+
+        self::assertStringContainsString('The MCP endpoint (Streamable HTTP)', $comment);
+    }
 }
