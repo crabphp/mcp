@@ -318,4 +318,30 @@ final class HttpTransportTest extends McpTestCase
         self::assertSame(300_000, $result['ttlMs']);
         self::assertSame('public', $result['cacheScope']);
     }
+
+    public function testArgumentsWrittenAsAListAreInvalidParamsEvenWhenEmpty(): void
+    {
+        $body =
+            '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_products","arguments":[],"_meta":'
+            . '{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}';
+
+        $response = self::post(self::app(), $body, [
+            'Content-Type' => 'application/json',
+            'MCP-Protocol-Version' => '2026-07-28',
+            'Mcp-Method' => 'tools/call',
+            'Mcp-Name' => 'list_products',
+        ]);
+
+        self::assertSame(-32_602, self::decode($response)['error']['code']);
+    }
+
+    public function testParamsWrittenAsAnEmptyListAreAnInvalidRequest(): void
+    {
+        $response = self::post(self::app(), '{"jsonrpc":"2.0","id":1,"method":"ping","params":[]}', [
+            'Content-Type' => 'application/json',
+        ]);
+
+        self::assertSame(400, $response->getStatusCode());
+        self::assertSame(-32_600, self::decode($response)['error']['code']);
+    }
 }

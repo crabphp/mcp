@@ -65,7 +65,7 @@ final readonly class Endpoint
             ));
         }
         try {
-            $message = Message::read($this->body($request));
+            $message = Message::read($this->body($request), (string) $request->getBody());
         } catch (McpError $error) {
             return $this->json($error->status(), Server::error(null, $error));
         }

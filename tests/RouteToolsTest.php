@@ -66,7 +66,7 @@ final class RouteToolsTest extends McpTestCase
         $tools = self::answer(self::routed(), 'tools/list')['tools'];
 
         self::assertSame(
-            ['orders_list', 'order_create', 'order_delete', 'order_show', 'orders_export', 'whoami'],
+            ['order_create', 'order_delete', 'order_show', 'orders_export', 'orders_list', 'whoami'],
             array_column($tools, 'name'),
         );
         self::assertSame(
@@ -80,11 +80,11 @@ final class RouteToolsTest extends McpTestCase
                 'required' => ['id'],
                 'additionalProperties' => false,
             ],
-            $tools[0]['inputSchema'],
+            array_column($tools, null, 'name')['orders_list']['inputSchema'],
         );
-        self::assertSame(['id', 'item', 'quantity'], array_keys($tools[1]['inputSchema']['properties']));
-        self::assertSame(['id', 'item', 'quantity'], $tools[1]['inputSchema']['required']);
-        self::assertSame(['readOnlyHint' => false, 'destructiveHint' => true], $tools[2]['annotations']);
+        self::assertSame(['id', 'item', 'quantity'], array_keys($tools[0]['inputSchema']['properties']));
+        self::assertSame(['id', 'item', 'quantity'], $tools[0]['inputSchema']['required']);
+        self::assertSame(['readOnlyHint' => false, 'destructiveHint' => true], $tools[1]['annotations']);
     }
 
     public function testACallIsARequestToTheRouteThroughItsMiddleware(): void
@@ -188,7 +188,7 @@ final class RouteToolsTest extends McpTestCase
 
         $listed = self::decode($reader)['result'];
         self::assertSame(
-            ['orders_list', 'order_show', 'orders_export', 'whoami'],
+            ['order_show', 'orders_export', 'orders_list', 'whoami'],
             array_column($listed['tools'], 'name'),
         );
         self::assertSame('private', $listed['cacheScope']);
@@ -293,7 +293,7 @@ final class RouteToolsTest extends McpTestCase
                 'jsonrpc' => '2.0',
                 'id' => 1,
                 'method' => 'tools/call',
-                'params' => ['name' => $tool, 'arguments' => $arguments],
+                'params' => ['name' => $tool, 'arguments' => (object) $arguments],
             ]),
             ['Content-Type' => 'application/json', 'MCP-Protocol-Version' => '2025-06-18', 'X-Key' => 'open'],
         ))['result'];

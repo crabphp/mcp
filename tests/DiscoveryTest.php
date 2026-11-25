@@ -68,11 +68,11 @@ final class DiscoveryTest extends McpTestCase
         ))['result']['tools'];
 
         self::assertSame(
-            ['orders_list', 'order_create', 'order_delete', 'order_show', 'whoami'],
+            ['order_create', 'order_delete', 'order_show', 'orders_list', 'whoami'],
             array_column($all, 'name'),
         );
         self::assertSame(
-            ['orders_list', 'order_create', 'order_delete', 'order_show', 'whoami', 'shop_search', 'shop_call'],
+            ['order_create', 'order_delete', 'order_show', 'orders_list', 'whoami', 'shop_search', 'shop_call'],
             array_column($orders, 'name'),
         );
     }
@@ -91,7 +91,7 @@ final class DiscoveryTest extends McpTestCase
         $found = self::call(self::discovering(), 'shop_search', ['group' => 'orders'])['structuredContent'];
 
         self::assertSame(
-            ['orders_list', 'order_create', 'order_delete', 'order_show'],
+            ['order_create', 'order_delete', 'order_show', 'orders_list'],
             array_column($found['tools'], 'name'),
         );
     }
@@ -101,7 +101,7 @@ final class DiscoveryTest extends McpTestCase
         $found = self::call(self::discovering(), 'shop_search')['structuredContent'];
 
         self::assertSame(
-            ['orders' => ['orders_list', 'order_create', 'order_delete', 'order_show'], 'whoami' => ['whoami']],
+            ['orders' => ['order_create', 'order_delete', 'order_show', 'orders_list'], 'whoami' => ['whoami']],
             $found['groups'],
         );
     }
@@ -142,7 +142,7 @@ final class DiscoveryTest extends McpTestCase
         $found = self::call($app, 'shop_search', ['group' => 'orders'])['structuredContent'];
         $writer = self::call($app, 'shop_search', ['group' => 'orders'], ['X-Write' => 'yes'])['structuredContent'];
 
-        self::assertSame(['orders_list', 'order_show'], array_column($found['tools'], 'name'));
+        self::assertSame(['order_show', 'orders_list'], array_column($found['tools'], 'name'));
         self::assertCount(4, $writer['tools']);
     }
 

@@ -99,7 +99,7 @@ final readonly class StdioTransport
                     ? McpError::invalidRequest('A message is one JSON-RPC object.')
                     : McpError::parse();
             }
-            $message = Message::read($body);
+            $message = Message::read($body, $line);
         } catch (McpError $error) {
             $write(Json::encode(Server::error(null, $error)) . "\n");
             return;

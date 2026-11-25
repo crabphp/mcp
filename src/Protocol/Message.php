@@ -17,17 +17,20 @@ final readonly class Message
 {
     /**
      * @param array<string, mixed> $params
+     * @param bool|null $objectArguments Whether params.arguments was written as a JSON object; null when it is absent or the text was not given.
      */
     private function __construct(
         public int|string|null $id,
         public string $method,
         public array $params,
+        public ?bool $objectArguments = null,
     ) {}
 
     /**
+     * @param string|null $text The message as written: an object and a list are told apart only there, since an empty one decodes the same.
      * @throws McpError A message that is not a JSON-RPC request or notification.
      */
-    public static function read(mixed $decoded): self
+    public static function read(mixed $decoded, ?string $text = null): self
     {
         if (!Json::isObject($decoded) || $decoded === []) {
             throw McpError::invalidRequest(
@@ -53,10 +56,15 @@ final readonly class Message
             }
         }
         $params = $decoded['params'] ?? [];
-        if (!Json::isObject($params)) {
+        $written = $text === null ? null : json_decode($text, false, 512);
+        $writtenParams = $written instanceof \stdClass ? $written->params ?? null : null;
+        if (!Json::isObject($params) || $writtenParams !== null && !$writtenParams instanceof \stdClass) {
             throw McpError::invalidRequest('A message\'s params are an object.');
         }
-        return new self($id, $decoded['method'], $params);
+        $arguments = $writtenParams instanceof \stdClass && property_exists($writtenParams, 'arguments')
+            ? $writtenParams->arguments instanceof \stdClass
+            : null;
+        return new self($id, $decoded['method'], $params, $arguments);
     }
 
     public function isNotification(): bool

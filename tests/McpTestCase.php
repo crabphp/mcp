@@ -85,11 +85,15 @@ abstract class McpTestCase extends TestCase
         int|string|null $id = 1,
         string $path = '/mcp',
     ): ResponseInterface {
+        if (($params['arguments'] ?? null) === []) {
+            // An empty object, as a client writes it; PHP would write [].
+            $params['arguments'] = new \stdClass();
+        }
         $message = [
             'jsonrpc' => '2.0',
             ...($id === null ? [] : ['id' => $id]),
             'method' => $method,
-            'params' => $params,
+            'params' => $params === [] ? new \stdClass() : $params,
         ];
         $name = $params['name'] ?? $params['uri'] ?? null;
         $all = [

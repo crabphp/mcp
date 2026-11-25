@@ -344,7 +344,7 @@ final readonly class Server
             throw McpError::invalidParams('tools/call names its tool in params.name.');
         }
         $arguments = $message->params['arguments'] ?? [];
-        if (!Json::isObject($arguments)) {
+        if (!Json::isObject($arguments) || $message->objectArguments === false) {
             throw McpError::invalidParams('A tool\'s arguments are an object.');
         }
         $token = $message->meta()['progressToken'] ?? null;

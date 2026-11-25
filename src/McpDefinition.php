@@ -120,10 +120,11 @@ final class McpDefinition implements Definition
                 $validator,
             ), $declaration->tools);
             if ($declaration->fromRoutes) {
+                $routed = [];
                 foreach ($router->routes() as $route) {
                     $tool = self::routeTool($router, $route);
                     if ($tool !== null) {
-                        $prepared[] = RouteTool::prepare(
+                        $routed[] = RouteTool::prepare(
                             $route,
                             $tool,
                             $router,
@@ -134,6 +135,12 @@ final class McpDefinition implements Definition
                         );
                     }
                 }
+                // By name: one order however the plugins that declared the routes were listed.
+                usort($routed, static fn(ToolHandle $a, ToolHandle $b): int => strcmp(
+                    $a->info()->name,
+                    $b->info()->name,
+                ));
+                array_push($prepared, ...$routed);
             }
             foreach ($prepared as $tool) {
                 $name = $tool->info()->name;

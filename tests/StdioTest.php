@@ -51,7 +51,7 @@ final class StdioTest extends McpTestCase
             'jsonrpc' => '2.0',
             ...($id === null ? [] : ['id' => $id]),
             'method' => $method,
-            'params' => $params,
+            'params' => $params === [] ? new \stdClass() : $params,
         ], JSON_THROW_ON_ERROR);
     }
 
@@ -141,5 +141,14 @@ final class StdioTest extends McpTestCase
 
         self::assertTrue($replies[0]['result']['isError']);
         self::assertSame('Authentication is required.', $replies[0]['result']['content'][0]['text']);
+    }
+
+    public function testArgumentsWrittenAsAListAreRefused(): void
+    {
+        $replies = self::serve([
+            '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_products","arguments":[]}}',
+        ]);
+
+        self::assertSame(-32_602, $replies[0]['error']['code']);
     }
 }
