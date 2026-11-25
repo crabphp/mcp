@@ -2,6 +2,10 @@
 
 Crab MCP follows [semantic versioning](https://semver.org). Before 1.0, a minor version may break what an application writes; the entry says what to change.
 
+## 0.1.3 — 2026-11-26
+
+- Discovery's search puts, among the tools whose names hold every word asked for, the one with the fewest other words first: "errors list" finds `errors_list` before `errors_keys_list`.
+
 ## 0.1.2 — 2026-11-26
 
 - The endpoint's route says what it is in its doc comment, for whatever describes an application's routes, such as an API document.
