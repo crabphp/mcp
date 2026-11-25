@@ -37,7 +37,12 @@ final readonly class ListServers implements Command
             $output->line("{$path}  {$server->name} {$server->version}");
             $rows = [];
             foreach ($server->tools as $name => $tool) {
-                $rows[] = ['tool', $name, $tool->class];
+                $info = $tool->info();
+                $rows[] = [
+                    'tool',
+                    $name,
+                    $info->route === null ? $info->class : "{$info->route->method} {$info->route->pattern}",
+                ];
             }
             foreach ($server->resources as $resource) {
                 $rows[] = [

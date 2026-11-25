@@ -67,7 +67,7 @@ final class ToolsTest extends McpTestCase
             [['type' => 'text', 'text' => json_encode($product, JSON_UNESCAPED_SLASHES)]],
             $result['content'],
         );
-        self::assertArrayNotHasKey('isError', $result);
+        self::assertFalse($result['isError']);
     }
 
     public function testDataWithoutAClassIsStructuredWithNoOutputSchema(): void
@@ -231,5 +231,15 @@ final class ToolsTest extends McpTestCase
 
         self::assertSame(200, $route->getStatusCode());
         self::assertSame('Lift-off', $tool['content'][0]['text']);
+    }
+
+    public function testASchemaThatSaysNothingIsAnObject(): void
+    {
+        $app = self::app(static fn() => Mcp::server('/mcp')->tools(\Crab\Mcp\Tests\Fixtures\Anything::class));
+
+        $response = self::send($app, 'tools/list', self::params());
+
+        // Some callers refuse a property schema that is [].
+        self::assertStringContainsString('"properties":{"value":{}}', (string) $response->getBody());
     }
 }

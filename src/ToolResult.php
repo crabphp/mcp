@@ -70,9 +70,8 @@ final readonly class ToolResult
         if ($this->structured) {
             $result['structuredContent'] = $this->data;
         }
-        if ($this->error) {
-            $result['isError'] = true;
-        }
+        // Said either way: a client is told, not left to assume.
+        $result['isError'] = $this->error;
         return $result;
     }
 }

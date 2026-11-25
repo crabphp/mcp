@@ -56,6 +56,12 @@ Mcp::server('/mcp')
 | `instructions()` | Guidance on the server as a whole, sent by `server/discover` |
 | `origins()` | Browser origins allowed besides the application's own; `'*'` for any |
 | `ttl()` | Milliseconds a client may keep discovery, lists and skills; `0`, the default, says ask each time |
+| `fromRoutes()` | Takes as tools the application's routes whose action is marked `#[Tool]`; see [Route tools](#route-tools) |
+| `filter()` | A `ToolFilter` deciding which tools each request is shown |
+| `maxResult()` | The most bytes a tool's result may be; a larger one is refused with which arguments ask for less |
+| `discovery()` | Lists a few tools and a search and a call tool instead of every tool; see [Discovery](#discovery) |
+
+Declaring a path again gives the same server, so a plugin listed after `McpPlugin` can add its own tools in `register()`: `$container->get(Servers::class)->server('/mcp')->tools([...])`.
 
 The declaration is read when the application is defined, before anything serves. A class that is not marked, two tools with one name, a signature that cannot be honoured or a skill that cannot be served stops startup with a message naming it. `php cua describe` and `php cua mcp:list` show every server with its tools, resources and skills, and the endpoint appears in `route:list` as `POST /mcp`.
 
@@ -105,6 +111,86 @@ public function handle(ImportFiles $input): \Generator
 ```
 
 When the client sends a `progressToken` and accepts `text/event-stream`, each `Progress` is sent as a `notifications/progress` event as soon as it is yielded, and the response ends the stream. Otherwise the tool runs to its end and is answered once. Progress must grow from one to the next. A client that closes the stream cancels the call: the generator is not resumed.
+
+## Route tools
+
+An API whose routes already do what an agent needs can offer them as they are. Mark the action's method, and say `fromRoutes()`:
+
+```php
+use Crab\Mcp\Tool;
+use Crab\Routing\FromQuery;
+
+final readonly class Issues
+{
+    #[Tool('errors_list', 'Lists a project\'s issues, newest first.', readOnly: true)]
+    public function index(int $id, #[FromQuery] IssueFilter $filter): array { ... }
+
+    #[Tool('error_delete', 'Deletes an issue and its events.', readOnly: false, destructive: true)]
+    public function delete(int $id): ResponseInterface { ... }
+}
+```
+
+```php
+Route::prefix('/api/v1')->middleware(TokenAuth::class)->group(static function (): void {
+    Route::get('/projects/{id:\d+}/issues', [Issues::class, 'index']);
+    Route::delete('/issues/{id:\d+}', [Issues::class, 'delete']);
+});
+
+Mcp::server('/mcp')->fromRoutes()->middleware(TokenAuth::class);
+```
+
+- **Arguments.** A route tool's arguments are one object: the route's path parameters, query fields and body fields side by side, each sent where the route reads it. A name used in two places is refused at startup, and so is an argument the tool does not take, or a path value its parameter's expression refuses.
+- **Calls go through the application.** A call is a request to the route, made in the process and handled as one from outside would be: through every middleware around the application and around the route. It carries the caller's headers, credentials included, and their address, so whatever guards the route guards the tool. The request carries the `ToolInfo` under `ToolInfo::ATTRIBUTE`, so middleware can tell a tool call apart.
+- **Answers.** What the route answers 2xx with is the result, JSON as structured content and its text. What it answers 4xx with is the result with `isError`, so the model reads the application's own refusal. A 5xx was reported by the application's error handler and is answered `-32603`.
+- A `#[Tool]` on a class with `handle()` makes its routes tools too.
+
+## Who sees which tools
+
+A `ToolFilter` decides, for each request, which tools it is shown. A tool it hides is not listed and not found by discovery:
+
+```php
+final readonly class TokenTools implements ToolFilter
+{
+    public function __construct(private ApiTokens $tokens) {}
+
+    public function handle(ToolInfo $tool, Request $request): bool
+    {
+        return $tool->readOnly === true || $this->tokens->canWrite($request);
+    }
+}
+
+Mcp::server('/mcp')->fromRoutes()->filter(TokenTools::class);
+```
+
+A filter shows; it does not guard. A hidden tool called by name is still called, and the route or the action checks who may do what and says why it refuses ("This token may only read"), which tells the model more than "unknown tool" would. With a filter, `tools/list` is marked private to the caller.
+
+## Telling who called what
+
+After every `tools/call`, the server dispatches `ToolCalled` through the application's event dispatcher (`EventsPlugin`). It carries the tool, the arguments, the MCP request, whether the call failed, and the error's text. That is the place for an activity log:
+
+```php
+$events->listen(ToolCalled::class, static function (ToolCalled $call) use ($activity): void {
+    if ($call->tool->readOnly !== true) {
+        $activity->record($call->request->user(), $call->tool->name, $call->arguments, !$call->failed, $call->message);
+    }
+});
+```
+
+What a listener throws is logged and changes nothing of the answer.
+
+## Discovery
+
+A server with many tools costs a model their descriptions before it starts. `discovery()` lists only a few tools and two of its own: one that searches the tools by words or by group, and one that calls a tool found.
+
+```php
+Mcp::server('/mcp')
+    ->fromRoutes()
+    ->discovery('shop_search', 'shop_call', always: ['projects_list'], groups: ['error' => 'errors']);
+```
+
+- **Groups.** A tool's group is the first word of its name, before `_`. `groups:` names another group for a word.
+- **Listing.** `/mcp?tools=all` lists every tool instead, and `/mcp?tools=errors,content` those groups beside the discovery tools.
+- **Calling.** Every tool can still be called by name. The filter holds for searching as for listing.
 
 ## Resources
 
@@ -178,7 +264,7 @@ A request is served in the era it is written in, with nothing kept between reque
 - **Modern (`2026-07-28`).** A request whose `_meta` names its protocol version, with the headers above. `server/discover` lists every version served.
 - **Legacy (`2025-11-25`, `2025-06-18`, `2025-03-26`).** A request with no such `_meta`, whose `MCP-Protocol-Version` header names one of these, or that has none, which is `2025-03-26`.
   - `initialize` agrees on the version the client asks for, or the newest legacy one, and gives no session: each request after it stands alone, which those revisions allow. `ping` answers `{}`, and `notifications/initialized` `202`.
-  - Tools, resources and skills are served as in the modern era, without `resultType`, `serverInfo` in `_meta` or cache hints. Skills keep the extension's own `ttlMs` and `cacheScope`.
+  - Tools, resources and skills are served as in the modern era, without `resultType`, `serverInfo` in `_meta` or cache hints. Skills keep the extension's own `ttlMs` and `cacheScope`. Structured content was an object then, so a list or a value is sent as `{"result": ...}`.
   - Errors other than a malformed message are sent with `200`, as those revisions did. A version header that is not served is refused with `400` and the supported list.
 
 ## What is not here

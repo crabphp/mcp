@@ -110,7 +110,10 @@ final readonly class Endpoint
             throw McpError::parse($error->status === 413 ? $error->getMessage() : 'The message is not valid JSON.');
         }
         if ($body === null) {
-            throw McpError::parse();
+            // JSON that is not an object or a list is a value, not a message.
+            throw json_validate((string) $request->getBody())
+                ? McpError::invalidRequest('A message is one JSON-RPC object.')
+                : McpError::parse();
         }
         // A strict reading gives objects; the protocol is read from arrays.
         return is_object($body) ? json_decode(Json::encode($body), true) : $body;
@@ -259,6 +262,8 @@ final readonly class Endpoint
         return $this->factory
             ->createResponse($status)
             ->withHeader('Content-Type', 'application/json')
+            // What a server answers can depend on who asks; no shared cache keeps it.
+            ->withHeader('Cache-Control', 'no-store')
             ->withBody($this->factory->createStream(Json::encode($message)));
     }
 }

@@ -94,7 +94,10 @@ final readonly class StdioTransport
                 throw McpError::parse($error->status === 413 ? $error->getMessage() : 'The message is not valid JSON.');
             }
             if ($body === null) {
-                throw McpError::parse();
+                // JSON that is not an object or a list is a value, not a message.
+                throw json_validate($line)
+                    ? McpError::invalidRequest('A message is one JSON-RPC object.')
+                    : McpError::parse();
             }
             $message = Message::read($body);
         } catch (McpError $error) {

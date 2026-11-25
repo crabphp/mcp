@@ -8,6 +8,10 @@ use Crab\Contracts\Http\Request;
 use Crab\Mcp\McpPlugin;
 use Crab\Mcp\Progress;
 use Crab\Mcp\Skills\SkillLibrary;
+use Crab\Mcp\ToolCalled;
+use Crab\Mcp\ToolInfo;
+use Crab\Mcp\ToolResult;
+use Psr\EventDispatcher\EventDispatcherInterface;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -24,9 +28,29 @@ final readonly class Server
     private const string META = 'io.modelcontextprotocol/';
 
     /**
-     * @param array<string, PreparedTool> $tools By name, in the order declared.
+     * The argument names that most often make a tool give less, for the
+     * message that refuses a result too large.
+     */
+    private const array NARROWING = [
+        'per_page',
+        'limit',
+        'cursor',
+        'page',
+        'from',
+        'to',
+        'before',
+        'after',
+        'section',
+        'fields',
+    ];
+
+    /**
+     * @param array<string, ToolHandle> $tools By name, in the order declared.
      * @param list<PreparedResource> $resources In the order declared, which is the order a URI is matched in.
      * @param \Closure(): ?LoggerInterface $logger Where a failure is reported, found when there is one.
+     * @param \Closure(ToolInfo, Request): bool|null $filter Whether a request may see a tool; every tool when null.
+     * @param \Closure(): ?EventDispatcherInterface $events Where ToolCalled is dispatched, found when there is one.
+     * @param int|null $maxResult The most bytes a tool's result may be; no limit when null.
      */
     public function __construct(
         public string $path,
@@ -38,6 +62,10 @@ final readonly class Server
         public array $resources,
         public ?SkillLibrary $skills,
         private \Closure $logger,
+        private ?\Closure $filter = null,
+        private ?\Closure $events = null,
+        public ?int $maxResult = null,
+        public ?Discovery $discovery = null,
     ) {}
 
     /**
@@ -142,7 +170,7 @@ final readonly class Server
         $skills = $this->skills !== null;
         return match (true) {
             $message->method === 'server/discover' => $this->discover(),
-            $message->method === 'tools/list' && $tools => $this->listTools($message),
+            $message->method === 'tools/list' && $tools => $this->listTools($message, $request),
             $message->method === 'tools/call' && $tools => $this->callTool($message, $request, $stream),
             $message->method === 'resources/list' && $resources => $this->listResources($message),
             $message->method === 'resources/templates/list' && $resources => $this->listTemplates($message),
@@ -170,7 +198,7 @@ final readonly class Server
         return match (true) {
             $message->method === 'initialize' => $this->initialize($message),
             $message->method === 'ping' => [],
-            $message->method === 'tools/list' && $tools => $this->listTools($message),
+            $message->method === 'tools/list' && $tools => $this->listTools($message, $request),
             $message->method === 'tools/call' && $tools => $this->callTool($message, $request, $stream),
             $message->method === 'resources/list' && $resources => $this->listResources($message),
             $message->method === 'resources/templates/list' && $resources => $this->listTemplates($message),
@@ -248,18 +276,61 @@ final readonly class Server
     }
 
     /**
+     * The tools the caller may see; with discovery, those it asked for by
+     * "?tools=", or the few it always lists and its own two.
+     *
      * @see https://modelcontextprotocol.io/specification/2026-07-28/server/tools#listing-tools
      * @return array<string, mixed>
      */
-    private function listTools(Message $message): array
+    private function listTools(Message $message, Request $request): array
     {
         self::firstPage($message);
-        return $this->cacheable([
-            'tools' => array_values(array_map(
-                static fn(PreparedTool $tool): array => $tool->definition(),
-                $this->tools,
-            )),
-        ]);
+        $tools = $this->visible($request);
+        $listed = null;
+        $discovery = $this->discovery;
+        if ($discovery !== null) {
+            $asked = $request->getQueryParams()['tools'] ?? '';
+            $groups = is_string($asked)
+                ? array_values(array_filter(array_map(trim(...), explode(',', strtolower($asked)))))
+                : [];
+            if (!in_array('all', $groups, true)) {
+                $listed = [
+                    ...array_map(
+                        static fn(ToolHandle $tool): array => $tool->definition(),
+                        array_values(array_filter(
+                            $tools,
+                            static fn(ToolHandle $tool): bool => (
+                                in_array($tool->info()->name, $discovery->always, true)
+                                || in_array($discovery->group($tool->info()->name), $groups, true)
+                            ),
+                        )),
+                    ),
+                    ...$discovery->definitions($discovery->groups($tools)),
+                ];
+            }
+        }
+        $listed ??= array_map(static fn(ToolHandle $tool): array => $tool->definition(), $tools);
+        return [
+            'tools' => $listed,
+            'ttlMs' => $this->ttl,
+            // What a filter shows depends on who asks.
+            'cacheScope' => $this->filter === null ? 'public' : 'private',
+        ];
+    }
+
+    /**
+     * @return list<ToolHandle>
+     */
+    private function visible(Request $request): array
+    {
+        $filter = $this->filter;
+        if ($filter === null) {
+            return array_values($this->tools);
+        }
+        return array_values(array_filter($this->tools, static fn(ToolHandle $tool): bool => $filter(
+            $tool->info(),
+            $request,
+        )));
     }
 
     /**
@@ -272,7 +343,6 @@ final readonly class Server
         if (!is_string($name)) {
             throw McpError::invalidParams('tools/call names its tool in params.name.');
         }
-        $tool = $this->tools[$name] ?? throw McpError::invalidParams("Unknown tool: {$name}.");
         $arguments = $message->params['arguments'] ?? [];
         if (!Json::isObject($arguments)) {
             throw McpError::invalidParams('A tool\'s arguments are an object.');
@@ -281,36 +351,132 @@ final readonly class Server
         if ($token !== null && !is_string($token) && !is_int($token)) {
             throw McpError::invalidParams('A progress token is a string or an integer.');
         }
-        $call = $tool->call($arguments, $request);
-        if (!$call instanceof \Generator) {
-            return $call;
+        $discovery = $this->discovery;
+        if ($discovery !== null && $name === $discovery->search) {
+            return $discovery->search($arguments, $this->visible($request));
         }
-        if (!$stream || $token === null) {
-            // Nobody is listening for progress: run the tool to its end and answer once.
-            foreach ($call as $_) {
+        $wrapped = $discovery !== null && $name === $discovery->call;
+        if ($wrapped) {
+            [$name, $arguments] = $discovery->unwrap($arguments);
+        }
+        // A tool the filter hides is still called: what answers it says why it refuses, as it would to a request.
+        $tool = $this->tools[$name] ?? null;
+        if ($tool === null) {
+            if ($wrapped) {
+                return ToolResult::error("Unknown tool: {$name}. Find tools with {$discovery?->search}.")->toArray();
             }
-            return $call->getReturn();
+            throw McpError::invalidParams("Unknown tool: {$name}.");
         }
-        return self::progress($call, $token);
+        try {
+            $call = $tool->call($arguments, $request);
+            if (!$call instanceof \Generator) {
+                return $this->called($tool, $arguments, $request, $call);
+            }
+            if (!$stream || $token === null) {
+                // Nobody is listening for progress: run the tool to its end and answer once.
+                foreach ($call as $_) {
+                }
+                return $this->called($tool, $arguments, $request, $call->getReturn());
+            }
+        } catch (\Throwable $error) {
+            $this->failed($tool, $arguments, $request, $error, $message);
+        }
+        return $this->progress($call, $token, $tool, $arguments, $request, $message);
+    }
+
+    /**
+     * The result as sent, once it is known to fit: a result over the
+     * server's limit is refused, with what may make it smaller. Listeners
+     * are told of the call.
+     *
+     * @param array<mixed> $arguments
+     * @param array<string, mixed> $result
+     * @return array<string, mixed>
+     */
+    private function called(ToolHandle $tool, array $arguments, Request $request, array $result): array
+    {
+        if ($this->maxResult !== null) {
+            $size = strlen(Json::encode($result));
+            if ($size > $this->maxResult) {
+                $takes = array_keys((array) ($tool->definition()['inputSchema']['properties'] ?? []));
+                $narrowing = array_values(array_intersect(self::NARROWING, $takes));
+                $result = ToolResult::error(
+                    "The result is {$size} bytes, more than the {$this->maxResult} this server sends. Ask for less"
+                    . ($narrowing === [] ? '.' : ', with ' . implode(', ', $narrowing) . '.'),
+                )->toArray();
+            }
+        }
+        $failed = ($result['isError'] ?? false) === true;
+        $message = $failed ? $result['content'][0]['text'] ?? null : null;
+        $this->dispatchCalled(
+            new ToolCalled($tool->info(), $arguments, $request, $failed, is_string($message) ? $message : null),
+        );
+        return $result;
+    }
+
+    /**
+     * A tool that failed: reported, unless the application reported it
+     * already, told to listeners, and answered with an internal error.
+     *
+     * @param array<mixed> $arguments
+     */
+    private function failed(
+        ToolHandle $tool,
+        array $arguments,
+        Request $request,
+        \Throwable $error,
+        Message $message,
+    ): never {
+        if (!$error instanceof RouteToolFailed) {
+            $this->report($error, $message);
+        }
+        $this->dispatchCalled(new ToolCalled($tool->info(), $arguments, $request, true, 'Internal error.'));
+        throw McpError::internal();
+    }
+
+    private function dispatchCalled(ToolCalled $event): void
+    {
+        $events = $this->events === null ? null : ($this->events)();
+        if ($events === null) {
+            return;
+        }
+        try {
+            $events->dispatch($event);
+        } catch (\Throwable $error) {
+            // A listener's failure is logged and changes nothing of the answer.
+            $this->report($error, "tools/call {$event->tool->name}, in a ToolCalled listener");
+        }
     }
 
     /**
      * @param \Generator<int, Progress, mixed, array<string, mixed>> $call
+     * @param array<mixed> $arguments
      * @return \Generator<int, array<string, mixed>, mixed, array<string, mixed>>
      */
-    private static function progress(\Generator $call, int|string $progressId): \Generator
-    {
-        foreach ($call as $progress) {
-            $params = ['progressToken' => $progressId, 'progress' => $progress->progress];
-            if ($progress->total !== null) {
-                $params['total'] = $progress->total;
+    private function progress(
+        \Generator $call,
+        int|string $progressId,
+        ToolHandle $tool,
+        array $arguments,
+        Request $request,
+        Message $message,
+    ): \Generator {
+        try {
+            foreach ($call as $progress) {
+                $params = ['progressToken' => $progressId, 'progress' => $progress->progress];
+                if ($progress->total !== null) {
+                    $params['total'] = $progress->total;
+                }
+                if ($progress->message !== null) {
+                    $params['message'] = $progress->message;
+                }
+                yield ['jsonrpc' => '2.0', 'method' => 'notifications/progress', 'params' => $params];
             }
-            if ($progress->message !== null) {
-                $params['message'] = $progress->message;
-            }
-            yield ['jsonrpc' => '2.0', 'method' => 'notifications/progress', 'params' => $params];
+            $result = $call->getReturn();
+        } catch (\Throwable $error) {
+            $this->failed($tool, $arguments, $request, $error, $message);
         }
-        return $call->getReturn();
+        return $this->called($tool, $arguments, $request, $result);
     }
 
     /**
@@ -451,6 +617,8 @@ final readonly class Server
         try {
             yield from $result;
             return $this->response($message->id, $result->getReturn(), $legacy);
+        } catch (McpError $error) {
+            return self::error($message->id, $error);
         } catch (\Throwable $error) {
             $this->report($error, $message);
             return self::error($message->id, McpError::internal());
@@ -468,6 +636,10 @@ final readonly class Server
             if (!isset($result['skills']) && !isset($result['skill'])) {
                 unset($result['ttlMs'], $result['cacheScope']);
             }
+            // Before 2026-07-28 structured content was an object: a list or a value is held as its "result".
+            if (array_key_exists('structuredContent', $result) && !self::isObject($result['structuredContent'])) {
+                $result['structuredContent'] = ['result' => $result['structuredContent']];
+            }
             return ['jsonrpc' => '2.0', 'id' => $id, 'result' => $result === [] ? new \stdClass() : $result];
         }
         return [
@@ -481,13 +653,19 @@ final readonly class Server
         ];
     }
 
-    private function report(\Throwable $error, Message $message): void
+    /**
+     * What a message asked for, for a report: its method and the tool or
+     * resource it names.
+     */
+    private static function what(Message $message): string
     {
-        $what = $message->method;
         $name = $message->params['name'] ?? $message->params['uri'] ?? null;
-        if (is_string($name)) {
-            $what .= " {$name}";
-        }
+        return is_string($name) ? "{$message->method} {$name}" : $message->method;
+    }
+
+    private function report(\Throwable $error, Message|string $message): void
+    {
+        $what = is_string($message) ? $message : self::what($message);
         $logger = ($this->logger)();
         if ($logger === null) {
             // A failure is never dropped; with no logger it goes to the process's error output.
@@ -495,5 +673,10 @@ final readonly class Server
             return;
         }
         $logger->error("The MCP server {$this->path} failed to answer {$what}.", ['exception' => $error]);
+    }
+
+    private static function isObject(mixed $value): bool
+    {
+        return $value instanceof \stdClass || is_array($value) && $value !== [] && !array_is_list($value);
     }
 }

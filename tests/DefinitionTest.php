@@ -8,6 +8,7 @@ use Crab\App;
 use Crab\Config\Config;
 use Crab\Mcp\Mcp;
 use Crab\Mcp\McpDefinition;
+use Crab\Mcp\Servers;
 use Crab\Mcp\Tests\Fixtures\Duplicate;
 use Crab\Mcp\Tests\Fixtures\ListProducts;
 use Crab\Mcp\Tests\Fixtures\Notes;
@@ -67,13 +68,18 @@ final class DefinitionTest extends McpTestCase
         $app->define();
     }
 
-    public function testAServerIsDeclaredOnce(): void
+    public function testAServerDeclaredAgainIsTheSameOne(): void
     {
-        self::app(static fn() => Mcp::server('/mcp'));
+        $app = self::app(static function (): void {
+            Mcp::server('/mcp')->tools(ListProducts::class);
+        });
+        $app->container->get(Servers::class)->server('/mcp')->tools(ShowProduct::class);
+        $app->define();
 
-        $this->expectExceptionMessage('is declared twice');
+        $servers = $app->container->get(McpDefinition::class)->servers();
 
-        Mcp::server('/mcp');
+        self::assertSame(['/mcp'], array_keys($servers));
+        self::assertSame(['list_products', 'show_product'], array_keys($servers['/mcp']->tools));
     }
 
     public function testAPathIsAPath(): void
@@ -149,5 +155,16 @@ final class DefinitionTest extends McpTestCase
         $routes = array_map(static fn($route): string => "{$route->method} {$route->pattern}", $app->router->routes());
 
         self::assertContains('POST /mcp', $routes);
+    }
+
+    public function testAServersToolsCanBeReadOnceDefined(): void
+    {
+        $app = self::app();
+        $app->define();
+
+        $tools = $app->container->get(Servers::class)->tools('/mcp');
+
+        self::assertSame('Shows one product by its id.', $tools['show_product']->description);
+        self::assertTrue($tools['show_product']->readOnly);
     }
 }

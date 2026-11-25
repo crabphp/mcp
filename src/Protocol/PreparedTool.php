@@ -15,6 +15,7 @@ use Crab\Mcp\Content\Text;
 use Crab\Mcp\Progress;
 use Crab\Mcp\Tool;
 use Crab\Mcp\ToolError;
+use Crab\Mcp\ToolInfo;
 use Crab\Mcp\ToolResult;
 use Psr\Http\Message\ResponseInterface;
 
@@ -26,18 +27,21 @@ use Psr\Http\Message\ResponseInterface;
  *
  * @internal
  */
-final readonly class PreparedTool
+final readonly class PreparedTool implements ToolHandle
 {
     /**
-     * @param class-string $class
      * @param array<string, mixed> $definition
      */
     private function __construct(
-        public string $name,
-        public string $class,
+        private ToolInfo $info,
         private PreparedAction $action,
         private array $definition,
     ) {}
+
+    public function info(): ToolInfo
+    {
+        return $this->info;
+    }
 
     /**
      * Reads the class, and throws a LogicException naming the tool and
@@ -60,7 +64,7 @@ final readonly class PreparedTool
             );
         }
         $tool = $attributes[0]->newInstance();
-        if (preg_match('/^[A-Za-z0-9_.\-]{1,128}$/', $tool->name) !== 1) {
+        if (!ToolInfo::validName($tool->name)) {
             throw new \LogicException(
                 "{$where} is named \"{$tool->name}\"; a tool's name is 1 to 128 letters, digits, \"_\", \"-\" and \".\", such as show_product.",
             );
@@ -91,46 +95,16 @@ final readonly class PreparedTool
                 "{$where} returns an HTTP response; a tool returns data, a string, Content or a ToolResult.",
             );
         }
-        $definition = ['name' => $tool->name];
-        if ($tool->title !== null) {
-            $definition['title'] = $tool->title;
-        }
-        $definition['description'] = $tool->description;
-        $definition['inputSchema'] = Schema::clean($schema);
-        $output = self::outputSchema($action->signature(), $validator);
-        if ($output !== null) {
-            $definition['outputSchema'] = $output;
-        }
-        $annotations = array_filter(
-            [
-                'readOnlyHint' => $tool->readOnly,
-                'destructiveHint' => $tool->destructive,
-                'idempotentHint' => $tool->idempotent,
-                'openWorldHint' => $tool->openWorld,
-            ],
-            static fn(?bool $hint): bool => $hint !== null,
-        );
-        if ($annotations !== []) {
-            $definition['annotations'] = $annotations;
-        }
-        return new self($tool->name, $class, $action, $definition);
+        $info = ToolInfo::of($tool, $class, 'handle');
+        $definition = $info->definition(Schema::clean($schema), Schema::output($action->signature(), $validator));
+        return new self($info, $action, $definition);
     }
 
-    /**
-     * The Tool, as tools/list sends it.
-     *
-     * @return array<string, mixed>
-     */
     public function definition(): array
     {
         return $this->definition;
     }
 
-    /**
-     * The classes the container makes to call it.
-     *
-     * @return list<class-string>
-     */
     public function dependencies(): array
     {
         return $this->action->dependencies();
@@ -140,9 +114,6 @@ final readonly class PreparedTool
      * Calls the tool with the arguments as the request's body. A tool
      * whose handle() is a generator gives one too, which yields its
      * Progress and returns its result.
-     *
-     * @param array<mixed> $arguments
-     * @return array<string, mixed>|\Generator<int, Progress, mixed, array<string, mixed>>
      */
     public function call(array $arguments, Request $request): array|\Generator
     {
@@ -171,7 +142,7 @@ final readonly class PreparedTool
                 $progress = $tool->current();
                 if (!$progress instanceof Progress) {
                     throw new \LogicException(
-                        "The tool {$this->name} yielded "
+                        "The tool {$this->info->name} yielded "
                         . get_debug_type($progress)
                         . '; a tool yields '
                         . Progress::class
@@ -180,7 +151,7 @@ final readonly class PreparedTool
                 }
                 if ($last !== null && $progress->progress <= $last) {
                     throw new \LogicException(
-                        "The tool {$this->name} reported progress {$progress->progress} after {$last}; progress only grows.",
+                        "The tool {$this->info->name} reported progress {$progress->progress} after {$last}; progress only grows.",
                     );
                 }
                 $last = $progress->progress;
@@ -270,78 +241,5 @@ final readonly class PreparedTool
             }
         }
         return ToolResult::error(implode("\n", $lines));
-    }
-
-    /**
-     * The schema of what the tool returns, when its return type says it
-     * exactly: a class the validator can read, whose JSON is its
-     * constructor's promoted properties and nothing else, as are those of
-     * every class inside it. Anything less certain has none, since a
-     * client may check the result against it.
-     *
-     * @return array<string, mixed>|null
-     */
-    private static function outputSchema(\ReflectionFunctionAbstract $signature, Validator $validator): ?array
-    {
-        $type = $signature->getReturnType();
-        if (!$type instanceof \ReflectionNamedType || $type->isBuiltin() || $type->allowsNull()) {
-            return null;
-        }
-        $class = $type->getName();
-        if (!class_exists($class) || new \ReflectionClass($class)->isInternal()) {
-            return null;
-        }
-        if (
-            is_a($class, ToolResult::class, true)
-            || is_a($class, Content::class, true)
-            || is_a($class, \Traversable::class, true)
-        ) {
-            return null;
-        }
-        try {
-            $schema = $validator->schema($class);
-        } catch (\LogicException) {
-            return null;
-        }
-        foreach (Schema::classes($schema) as $inside) {
-            if (!self::plain($inside)) {
-                return null;
-            }
-        }
-        return Schema::clean($schema);
-    }
-
-    /**
-     * Whether a class is written as JSON exactly as the validator reads
-     * it: every constructor parameter a promoted public property, and no
-     * other public property.
-     *
-     * @param class-string $class
-     */
-    private static function plain(string $class): bool
-    {
-        $reflection = new \ReflectionClass($class);
-        if ($reflection->implementsInterface(\JsonSerializable::class) || $reflection->isEnum()) {
-            return false;
-        }
-        $constructor = $reflection->getConstructor();
-        $promoted = [];
-        foreach ($constructor?->getParameters() ?? [] as $parameter) {
-            if (!$parameter->isPromoted()) {
-                return false;
-            }
-            $promoted[] = $parameter->getName();
-        }
-        $public = [];
-        foreach ($reflection->getProperties(\ReflectionProperty::IS_PUBLIC) as $property) {
-            if ($property->isStatic()) {
-                continue;
-            }
-
-            $public[] = $property->getName();
-        }
-        sort($promoted);
-        sort($public);
-        return $promoted === $public;
     }
 }

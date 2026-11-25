@@ -16,11 +16,17 @@ namespace Crab\Mcp;
  *         public function handle(ProductId $input): Product { ... }
  *     }
  *
+ * On a method of a route's action, it makes that route a tool of a
+ * server that takes its tools fromRoutes():
+ *
+ *     #[Tool('errors_list', 'Lists a project\'s issues.', readOnly: true)]
+ *     public function index(int $id, #[FromQuery] IssueFilter $filter): array
+ *
  * The hints are what a client may show or weigh; they promise nothing.
  *
  * @see https://modelcontextprotocol.io/specification/2026-07-28/server/tools#tool
  */
-#[\Attribute(\Attribute::TARGET_CLASS)]
+#[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
 final readonly class Tool
 {
     /**

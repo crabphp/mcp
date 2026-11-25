@@ -137,7 +137,7 @@ final class LegacyTest extends McpTestCase
 
         self::assertSame(['tools'], array_keys($listed));
         self::assertSame('show_product', $listed['tools'][0]['name']);
-        self::assertSame(['content', 'structuredContent'], array_keys($called));
+        self::assertSame(['content', 'structuredContent', 'isError'], array_keys($called));
         self::assertSame(3, $called['structuredContent']['id']);
     }
 

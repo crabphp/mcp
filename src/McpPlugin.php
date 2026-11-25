@@ -29,6 +29,7 @@ final class McpPlugin implements Plugin
     {
         $definition = new McpDefinition($container);
         $container->instance(McpDefinition::class, $definition);
+        $container->instance(Servers::class, new Servers($definition));
         $container->get(Definitions::class)->add($definition);
         if ($container->has(Console::class)) {
             $console = $container->get(Console::class);

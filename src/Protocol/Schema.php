@@ -4,10 +4,15 @@ declare(strict_types=1);
 
 namespace Crab\Mcp\Protocol;
 
+use Crab\Contracts\Validation\Validator;
+use Crab\Mcp\Content\Content;
+use Crab\Mcp\ToolResult;
+
 /**
  * What the framework's validator writes as JSON Schema, made fit to send:
  * the names of PHP classes it marks for its own reading ("x-class",
- * "x-rules") are left out, since they mean nothing to a client.
+ * "x-rules") are left out, since they mean nothing to a client, and a
+ * schema that says nothing is {}, never [].
  *
  * @internal
  */
@@ -26,9 +31,27 @@ final class Schema
             if (in_array($key, self::PRIVATE, true)) {
                 continue;
             }
-            $clean[$key] = is_array($value) ? self::cleanValue($value) : $value;
+            $clean[$key] = match (true) {
+                // Each property is a schema, an object even when it says nothing: some callers refuse [].
+                $key === 'properties' && is_array($value) => array_map(self::property(...), $value),
+                in_array($key, ['items', 'additionalProperties'], true) && $value === [] => new \stdClass(),
+                is_array($value) => self::cleanValue($value),
+                default => $value,
+            };
         }
         return $clean;
+    }
+
+    /**
+     * One property's schema, {} when it says nothing.
+     */
+    private static function property(mixed $property): mixed
+    {
+        return match (true) {
+            $property === [] => new \stdClass(),
+            is_array($property) => self::clean($property),
+            default => $property,
+        };
     }
 
     /**
@@ -86,5 +109,78 @@ final class Schema
                 : $item, $value);
         }
         return self::clean($value);
+    }
+
+    /**
+     * The schema of what the tool returns, when its return type says it
+     * exactly: a class the validator can read, whose JSON is its
+     * constructor's promoted properties and nothing else, as are those of
+     * every class inside it. Anything less certain has none, since a
+     * client may check the result against it.
+     *
+     * @return array<string, mixed>|null
+     */
+    public static function output(\ReflectionFunctionAbstract $signature, Validator $validator): ?array
+    {
+        $type = $signature->getReturnType();
+        if (!$type instanceof \ReflectionNamedType || $type->isBuiltin() || $type->allowsNull()) {
+            return null;
+        }
+        $class = $type->getName();
+        if (!class_exists($class) || new \ReflectionClass($class)->isInternal()) {
+            return null;
+        }
+        if (
+            is_a($class, ToolResult::class, true)
+            || is_a($class, Content::class, true)
+            || is_a($class, \Traversable::class, true)
+        ) {
+            return null;
+        }
+        try {
+            $schema = $validator->schema($class);
+        } catch (\LogicException) {
+            return null;
+        }
+        foreach (self::classes($schema) as $inside) {
+            if (!self::plain($inside)) {
+                return null;
+            }
+        }
+        return self::clean($schema);
+    }
+
+    /**
+     * Whether a class is written as JSON exactly as the validator reads
+     * it: every constructor parameter a promoted public property, and no
+     * other public property.
+     *
+     * @param class-string $class
+     */
+    private static function plain(string $class): bool
+    {
+        $reflection = new \ReflectionClass($class);
+        if ($reflection->implementsInterface(\JsonSerializable::class) || $reflection->isEnum()) {
+            return false;
+        }
+        $constructor = $reflection->getConstructor();
+        $promoted = [];
+        foreach ($constructor?->getParameters() ?? [] as $parameter) {
+            if (!$parameter->isPromoted()) {
+                return false;
+            }
+            $promoted[] = $parameter->getName();
+        }
+        $public = [];
+        foreach ($reflection->getProperties(\ReflectionProperty::IS_PUBLIC) as $property) {
+            if ($property->isStatic()) {
+                continue;
+            }
+
+            $public[] = $property->getName();
+        }
+        sort($promoted);
+        sort($public);
+        return $promoted === $public;
     }
 }

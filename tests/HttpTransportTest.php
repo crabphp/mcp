@@ -185,6 +185,8 @@ final class HttpTransportTest extends McpTestCase
     public static function malformed(): iterable
     {
         yield 'not JSON' => ['{"jsonrpc":', -32_700];
+        yield 'null' => ['null', -32_600];
+        yield 'a number' => ['1', -32_600];
         yield 'a batch' => ['[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]', -32_600];
         yield 'no version' => ['{"id":1,"method":"tools/list"}', -32_600];
         yield 'a response' => ['{"jsonrpc":"2.0","id":1,"result":{}}', -32_600];
