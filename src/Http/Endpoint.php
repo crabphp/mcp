@@ -12,6 +12,7 @@ use Crab\Mcp\Protocol\Json;
 use Crab\Mcp\Protocol\McpError;
 use Crab\Mcp\Protocol\Message;
 use Crab\Mcp\Protocol\Server;
+use Crab\Mcp\Protocol\Versions;
 use Psr\Http\Message\ResponseInterface;
 
 /**
@@ -72,7 +73,11 @@ final readonly class Endpoint
             return $this->factory->createResponse(202);
         }
         try {
-            $version = $this->headers($request, $message);
+            $version = $this->header($request, 'MCP-Protocol-Version', false);
+            $legacy = Versions::legacy($message, $version) !== null;
+            if (!$legacy) {
+                $this->headers($request, $message, $version);
+            }
         } catch (McpError $error) {
             return $this->json($error->status(), Server::error($message->id, $error));
         }
@@ -81,7 +86,12 @@ final readonly class Endpoint
         if ($reply instanceof \Generator) {
             return self::events($reply);
         }
-        $status = isset($reply['error']['code']) ? McpError::statusOf((int) $reply['error']['code']) : 200;
+        $code = isset($reply['error']['code']) ? (int) $reply['error']['code'] : null;
+        // Before 2026-07-28 an unknown method was an answer like any other, sent with 200.
+        $status = match (true) {
+            $code === null, $legacy && $code === McpError::METHOD_NOT_FOUND => 200,
+            default => McpError::statusOf($code),
+        };
         return $this->json($status, (array) $reply);
     }
 
@@ -107,19 +117,24 @@ final readonly class Endpoint
     }
 
     /**
-     * Checks the headers against the message, and gives the protocol
-     * version they name.
+     * Checks a modern request's headers against its body. A legacy
+     * request has only MCP-Protocol-Version, which named its era.
      *
      * @see https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation
      */
-    private function headers(Request $request, Message $message): string
+    private function headers(Request $request, Message $message, ?string $version): void
     {
-        $version = $this->header($request, 'MCP-Protocol-Version', false);
         if ($version === null) {
             throw McpError::headerMismatch(
                 'A request carries the MCP-Protocol-Version header; this server speaks '
                 . McpPlugin::PROTOCOL_VERSION
                 . '.',
+            );
+        }
+        $named = $message->meta()['io.modelcontextprotocol/protocolVersion'] ?? null;
+        if (is_string($named) && $named !== $version) {
+            throw McpError::headerMismatch(
+                "The MCP-Protocol-Version header is {$version} and params._meta names {$named}; they are the same.",
             );
         }
         if ($version !== McpPlugin::PROTOCOL_VERSION) {
@@ -145,7 +160,6 @@ final readonly class Endpoint
                 );
             }
         }
-        return $version;
     }
 
     /**

@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Crab\Mcp\Protocol;
 
-use Crab\Mcp\McpPlugin;
-
 /**
  * A request the server answers with a JSON-RPC error rather than a result.
  * The message is shown to the client, so it never carries what a tool
@@ -71,8 +69,8 @@ final class McpError extends \RuntimeException
     {
         return new self(
             self::UNSUPPORTED_PROTOCOL_VERSION,
-            'Unsupported protocol version; this server speaks ' . McpPlugin::PROTOCOL_VERSION . '.',
-            ['supported' => [McpPlugin::PROTOCOL_VERSION], 'requested' => $requested],
+            'Unsupported protocol version; this server speaks ' . implode(', ', Versions::all()) . '.',
+            ['supported' => Versions::all(), 'requested' => $requested],
         );
     }
 

@@ -16,7 +16,7 @@ final class HttpTransportTest extends McpTestCase
         $result = self::answer(self::app(), 'server/discover');
 
         self::assertSame('complete', $result['resultType']);
-        self::assertSame(['2026-07-28'], $result['supportedVersions']);
+        self::assertSame(['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26'], $result['supportedVersions']);
         self::assertSame(
             [
                 'tools' => [],
@@ -93,21 +93,18 @@ final class HttpTransportTest extends McpTestCase
         self::assertSame(400, $response->getStatusCode());
         $error = self::decode($response)['error'];
         self::assertSame(-32_022, $error['code']);
-        self::assertSame(['supported' => ['2026-07-28'], 'requested' => '2099-01-01'], $error['data']);
+        self::assertSame(
+            ['supported' => ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26'], 'requested' => '2099-01-01'],
+            $error['data'],
+        );
     }
 
-    public function testALegacyInitializeIsToldTheVersionsTheServerSpeaks(): void
+    public function testInitializeInTheModernEraIsNotAMethod(): void
     {
-        $response = self::send(self::app(), 'initialize', [
-            'protocolVersion' => '2025-11-25',
-            'capabilities' => new \stdClass(),
-            'clientInfo' => ['name' => 'Old', 'version' => '1'],
-        ]);
+        $response = self::send(self::app(), 'initialize', self::params());
 
-        self::assertSame(400, $response->getStatusCode());
-        $error = self::decode($response)['error'];
-        self::assertSame(-32_022, $error['code']);
-        self::assertSame(['supported' => ['2026-07-28'], 'requested' => '2025-11-25'], $error['data']);
+        self::assertSame(404, $response->getStatusCode());
+        self::assertSame(-32_601, self::decode($response)['error']['code']);
     }
 
     /**

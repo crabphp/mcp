@@ -44,10 +44,11 @@ final readonly class Server
      * The answer to a message: a JSON-RPC response, nothing for a
      * notification, or for a tool that reports its progress while the
      * client listens, a generator of notifications that returns the
-     * response.
+     * response. A request of a legacy revision is answered as that
+     * revision would, without what only the modern one has.
      *
      * @param bool $stream Whether the transport can send notifications before the response.
-     * @param string|null $headerVersion The protocol version the transport's headers name, which the request must name too.
+     * @param string|null $headerVersion The MCP-Protocol-Version header, which a modern request's _meta must name too; null on stdio.
      * @return array<string, mixed>|\Generator<int, array<string, mixed>, mixed, array<string, mixed>>|null
      */
     public function handle(
@@ -57,11 +58,14 @@ final readonly class Server
         ?string $headerVersion = null,
     ): array|\Generator|null {
         if ($message->isNotification()) {
-            // notifications/cancelled is the only one, and nothing here runs alongside it to cancel.
+            // notifications/initialized and notifications/cancelled: nothing is kept to change, and nothing runs beside it to cancel.
             return null;
         }
+        $legacy = Versions::legacy($message, $headerVersion) !== null;
         try {
-            $result = $this->dispatch($message, $request, $stream, $headerVersion);
+            $result = $legacy
+                ? $this->dispatchLegacy($message, $request, $stream)
+                : $this->dispatch($message, $request, $stream, $headerVersion);
         } catch (McpError $error) {
             return self::error($message->id, $error);
         } catch (\Throwable $error) {
@@ -69,9 +73,9 @@ final readonly class Server
             return self::error($message->id, McpError::internal());
         }
         if ($result instanceof \Generator) {
-            return $this->streamed($message, $result);
+            return $this->streamed($message, $result, $legacy);
         }
-        return $this->response($message->id, $result);
+        return $this->response($message->id, $result, $legacy);
     }
 
     /**
@@ -90,17 +94,12 @@ final readonly class Server
     }
 
     /**
-     * Checks the request's _meta and gives the protocol version it names.
+     * Checks a modern request's _meta.
      *
      * @see https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning#protocol-version-negotiation
      */
-    private function version(Message $message, ?string $headerVersion): string
+    private function version(Message $message, ?string $headerVersion): void
     {
-        if ($message->method === 'initialize') {
-            // A client of 2025-11-25 or before: there is no handshake to give it, only the versions this server speaks.
-            $requested = $message->params['protocolVersion'] ?? '';
-            throw McpError::unsupportedVersion(is_string($requested) ? $requested : '');
-        }
         $meta = $message->meta();
         $version = $meta[self::META . 'protocolVersion'] ?? null;
         if (!is_string($version)) {
@@ -110,9 +109,7 @@ final readonly class Server
                 );
             }
             throw McpError::invalidParams(
-                'A request names its protocol version in params._meta["io.modelcontextprotocol/protocolVersion"]; this server speaks '
-                . McpPlugin::PROTOCOL_VERSION
-                . '.',
+                'A request names its protocol version in params._meta["io.modelcontextprotocol/protocolVersion"].',
             );
         }
         if ($headerVersion !== null && $version !== $headerVersion) {
@@ -128,7 +125,6 @@ final readonly class Server
                 'A request declares what the client can do in params._meta["io.modelcontextprotocol/clientCapabilities"], {} when nothing.',
             );
         }
-        return $version;
     }
 
     /**
@@ -159,10 +155,71 @@ final readonly class Server
     }
 
     /**
-     * @see https://modelcontextprotocol.io/specification/2026-07-28/server/discover
+     * A request of 2025-11-25, 2025-06-18 or 2025-03-26: initialize and
+     * ping, and the tools, resources and skills as the modern revision has
+     * them; clients of 2025-11-25 already declare the skills extension.
+     *
+     * @see https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle
+     * @return array<string, mixed>|\Generator<int, array<string, mixed>, mixed, array<string, mixed>>
+     */
+    private function dispatchLegacy(Message $message, Request $request, bool $stream): array|\Generator
+    {
+        $tools = $this->tools !== [];
+        $resources = $this->resources !== [] || $this->skills !== null;
+        $skills = $this->skills !== null;
+        return match (true) {
+            $message->method === 'initialize' => $this->initialize($message),
+            $message->method === 'ping' => [],
+            $message->method === 'tools/list' && $tools => $this->listTools($message),
+            $message->method === 'tools/call' && $tools => $this->callTool($message, $request, $stream),
+            $message->method === 'resources/list' && $resources => $this->listResources($message),
+            $message->method === 'resources/templates/list' && $resources => $this->listTemplates($message),
+            $message->method === 'resources/read' && $resources => $this->readResource($message, $request),
+            $message->method === 'resources/directory/read' && $skills => $this->readDirectory($message),
+            $message->method === 'skills/list' && $skills => $this->listSkills($message),
+            $message->method === 'skills/get' && $skills => $this->getSkill($message),
+            default => throw McpError::methodNotFound($message->method),
+        };
+    }
+
+    /**
+     * The legacy handshake, answered and forgotten: the version the client
+     * asked for when it is served, otherwise the newest legacy one, which
+     * the client may refuse. No session is given.
+     *
+     * @see https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#initialization
      * @return array<string, mixed>
      */
-    private function discover(): array
+    private function initialize(Message $message): array
+    {
+        $requested = $message->params['protocolVersion'] ?? null;
+        $client = $message->params['clientInfo'] ?? null;
+        if (
+            !is_string($requested)
+            || !Json::isObject($message->params['capabilities'] ?? null)
+            || !is_array($client)
+            || !is_string($client['name'] ?? null)
+            || !is_string($client['version'] ?? null)
+        ) {
+            throw McpError::invalidParams(
+                'initialize takes protocolVersion, capabilities, and clientInfo with its name and version.',
+            );
+        }
+        $result = [
+            'protocolVersion' => in_array($requested, Versions::LEGACY, true) ? $requested : Versions::LEGACY[0],
+            'capabilities' => $this->capabilities(),
+            'serverInfo' => ['name' => $this->name, 'version' => $this->version],
+        ];
+        if ($this->instructions !== null) {
+            $result['instructions'] = $this->instructions;
+        }
+        return $result;
+    }
+
+    /**
+     * What the server offers, as discovery or initialize says it.
+     */
+    private function capabilities(): array|\stdClass
     {
         $capabilities = [];
         if ($this->tools !== []) {
@@ -174,10 +231,16 @@ final readonly class Server
         if ($this->skills !== null) {
             $capabilities['extensions'] = ['io.modelcontextprotocol/skills' => ['directoryRead' => true]];
         }
-        $result = [
-            'supportedVersions' => [McpPlugin::PROTOCOL_VERSION],
-            'capabilities' => $capabilities === [] ? new \stdClass() : $capabilities,
-        ];
+        return $capabilities === [] ? new \stdClass() : $capabilities;
+    }
+
+    /**
+     * @see https://modelcontextprotocol.io/specification/2026-07-28/server/discover
+     * @return array<string, mixed>
+     */
+    private function discover(): array
+    {
+        $result = ['supportedVersions' => Versions::all(), 'capabilities' => $this->capabilities()];
         if ($this->instructions !== null) {
             $result['instructions'] = $this->instructions;
         }
@@ -383,11 +446,11 @@ final readonly class Server
      * @param \Generator<int, array<string, mixed>, mixed, array<string, mixed>> $result
      * @return \Generator<int, array<string, mixed>, mixed, array<string, mixed>>
      */
-    private function streamed(Message $message, \Generator $result): \Generator
+    private function streamed(Message $message, \Generator $result, bool $legacy): \Generator
     {
         try {
             yield from $result;
-            return $this->response($message->id, $result->getReturn());
+            return $this->response($message->id, $result->getReturn(), $legacy);
         } catch (\Throwable $error) {
             $this->report($error, $message);
             return self::error($message->id, McpError::internal());
@@ -398,8 +461,15 @@ final readonly class Server
      * @param array<string, mixed> $result
      * @return array<string, mixed>
      */
-    private function response(int|string|null $id, array $result): array
+    private function response(int|string|null $id, array $result, bool $legacy): array
     {
+        if ($legacy) {
+            // Cache hints, resultType and serverInfo in _meta came with 2026-07-28; the skills extension keeps its own.
+            if (!isset($result['skills']) && !isset($result['skill'])) {
+                unset($result['ttlMs'], $result['cacheScope']);
+            }
+            return ['jsonrpc' => '2.0', 'id' => $id, 'result' => $result === [] ? new \stdClass() : $result];
+        }
         return [
             'jsonrpc' => '2.0',
             'id' => $id,

@@ -2,9 +2,9 @@
 
 [Model Context Protocol](https://modelcontextprotocol.io) servers for [Crab](https://github.com/crabphp/framework) applications: tools, resources and skills, over Streamable HTTP and stdio.
 
-It is built against MCP revision [`2026-07-28`](https://modelcontextprotocol.io/specification/2026-07-28), the stateless one: there is no `initialize` handshake and no session, and every request carries its protocol version and the client's capabilities in `_meta`.
+It is built against MCP revision [`2026-07-28`](https://modelcontextprotocol.io/specification/2026-07-28), the stateless one, and serves clients of `2025-11-25`, `2025-06-18` and `2025-03-26` from the same endpoint. Those clients begin with `initialize`, as the official MCP Inspector still does.
 
-> **Status: unreleased.** Everything below is implemented and tested, end to end over HTTP and stdio. It has not yet been tried against third-party MCP clients that speak `2026-07-28`, and the API may change before a first release.
+> **Status: unreleased.** Everything below is implemented and tested end to end over HTTP and stdio, and against the official MCP Inspector CLI (2.16, which speaks `2025-11-25`) on both transports. The API may change before a first release.
 
 ## Installation
 
@@ -171,6 +171,16 @@ resources/skills/
 - **Limits.** A line longer than `server.max_body` is refused and skipped.
 - **Callers.** No middleware runs, so whoever starts the process is the caller, and a tool that takes a user is refused one. Requests are answered one at a time, so `notifications/cancelled` always arrives after the request it names has been answered.
 
+## Protocol versions
+
+A request is served in the era it is written in, with nothing kept between requests:
+
+- **Modern (`2026-07-28`).** A request whose `_meta` names its protocol version, with the headers above. `server/discover` lists every version served.
+- **Legacy (`2025-11-25`, `2025-06-18`, `2025-03-26`).** A request with no such `_meta`, whose `MCP-Protocol-Version` header names one of these, or that has none, which is `2025-03-26`.
+  - `initialize` agrees on the version the client asks for, or the newest legacy one, and gives no session: each request after it stands alone, which those revisions allow. `ping` answers `{}`, and `notifications/initialized` `202`.
+  - Tools, resources and skills are served as in the modern era, without `resultType`, `serverInfo` in `_meta` or cache hints. Skills keep the extension's own `ttlMs` and `cacheScope`.
+  - Errors other than a malformed message are sent with `200`, as those revisions did. A version header that is not served is refused with `400` and the supported list.
+
 ## What is not here
 
 - **Prompts and completions.** Their methods answer `-32601`.
@@ -178,7 +188,6 @@ resources/skills/
 - **Multi round-trip input** (`input_required`, elicitation), the tasks extension, and OAuth protected resource metadata.
 - **Pagination.** Every list is given whole, so a `cursor` is invalid.
 - **`x-mcp-header`.** It is never emitted, so no `Mcp-Param-*` header is needed.
-- **Clients of `2025-11-25` and before.** An `initialize` is answered with `-32022` naming `2026-07-28`.
 - **Deprecated features** (sampling, roots, logging) are not planned.
 
 ## License

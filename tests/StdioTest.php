@@ -66,7 +66,7 @@ final class StdioTest extends McpTestCase
 
         self::assertCount(2, $replies);
         self::assertSame('a', $replies[0]['id']);
-        self::assertSame(['2026-07-28'], $replies[0]['result']['supportedVersions']);
+        self::assertSame('2026-07-28', $replies[0]['result']['supportedVersions'][0]);
         self::assertSame('b', $replies[1]['id']);
         self::assertSame(2, $replies[1]['result']['structuredContent']['id']);
     }
@@ -86,12 +86,32 @@ final class StdioTest extends McpTestCase
         self::assertSame('Lift-off', $replies[2]['result']['content'][0]['text']);
     }
 
-    public function testNoHeadersAreAskedForButMetaIs(): void
+    public function testALegacyClientInitializesAndIsServed(): void
     {
-        $replies = self::serve([self::line('tools/list')]);
+        $replies = self::serve([
+            self::line('initialize', [
+                'protocolVersion' => '2025-06-18',
+                'capabilities' => new \stdClass(),
+                'clientInfo' => ['name' => 'Old', 'version' => '1'],
+            ]),
+            self::line('notifications/initialized', [], null),
+            self::line('tools/list', [], 2),
+        ]);
+
+        self::assertCount(2, $replies);
+        self::assertSame('2025-06-18', $replies[0]['result']['protocolVersion']);
+        self::assertCount(6, $replies[1]['result']['tools']);
+        self::assertArrayNotHasKey('resultType', $replies[1]['result']);
+    }
+
+    public function testAModernRequestWithoutCapabilitiesIsRefused(): void
+    {
+        $params = self::params();
+        unset($params['_meta']['io.modelcontextprotocol/clientCapabilities']);
+
+        $replies = self::serve([self::line('tools/list', $params)]);
 
         self::assertSame(-32_602, $replies[0]['error']['code']);
-        self::assertStringContainsString('protocolVersion', $replies[0]['error']['message']);
     }
 
     public function testABadLineIsAnsweredAndTheNextIsRead(): void
