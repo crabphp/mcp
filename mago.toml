@@ -1,0 +1,18 @@
+#:schema https://mago.carthage.software/1.57.0/schema.json
+version = "1"
+php-version = "8.4.0"
+
+[source]
+workspace = "."
+paths = ["src/", "tests/"]
+excludes = ["vendor/**"]
+
+[formatter]
+print-width = 120
+
+[linter]
+integrations = ["phpunit"]
+
+[linter.rules]
+# Assertions consistently use PHPUnit's documented self:: style.
+assertion-style = { enabled = false }
